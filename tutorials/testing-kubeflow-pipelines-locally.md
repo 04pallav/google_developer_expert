@@ -329,25 +329,28 @@ Docker is optional — you can run in `subprocess` mode instead of Docker mode.
 
 ### Local Execution
 
+After `kfp.local.init()`, call the pipeline function directly:
+
 ```python
 import kfp
+from kfp.local import SubprocessRunner
+from pipeline import ml_pipeline
 
 # Initialize local runner
-kfp.local.init()
+kfp.local.init(runner=SubprocessRunner(), pipeline_root="./local_outputs")
 
-# Run the pipeline locally
-result = kfp.local.run_pipeline(
-    pipeline_func=ml_pipeline,
-    params={
-        "query": "SELECT * FROM dataset.table",
-        "project_id": "test-project",
-    },
+# Run the pipeline by calling it directly
+result = ml_pipeline(
+    query="SELECT * FROM dataset.table",
+    project_id="test-project",
 )
 
-print(f"Pipeline run completed: {result.status}")
+print(f"Pipeline status: {result.status}")
+for task_name, task in result.tasks.items():
+    print(f"  {task_name}: {task.status}")
 ```
 
-This executes each component as a separate Python subprocess. Artifacts are written to a local directory.
+This executes each component as a separate Python subprocess. Artifacts are written to `./local_outputs`.
 
 ### Using DockerRunner
 
@@ -356,14 +359,11 @@ For a more realistic test (each component runs in its own container):
 ```python
 from kfp.local import DockerRunner
 
-kfp.local.init(runner=DockerRunner())
+kfp.local.init(runner=DockerRunner(), pipeline_root="./local_outputs")
 
-result = kfp.local.run_pipeline(
-    pipeline_func=ml_pipeline,
-    params={
-        "query": "SELECT * FROM dataset.table",
-        "project_id": "test-project",
-    },
+result = ml_pipeline(
+    query="SELECT * FROM dataset.table",
+    project_id="test-project",
 )
 ```
 
