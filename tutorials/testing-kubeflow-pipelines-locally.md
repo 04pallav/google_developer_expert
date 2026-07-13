@@ -55,7 +55,8 @@ def load_data_op(
 
     client = bigquery.Client(project=project_id)
     df = client.query(query).to_dataframe()
-    df.to_csv(dataset.path, index=False)
+    path = dataset.path if hasattr(dataset, 'path') else dataset
+    df.to_csv(path, index=False)
     return (len(df),)
 ```
 
@@ -66,19 +67,24 @@ A lightweight training step using scikit-learn:
 ```python
 @component(
     base_image="python:3.10",
-    packages_to_install=["pandas==2.0.3", "scikit-learn==1.3.0"],
+    packages_to_install=["pandas==2.0.3", "scikit-learn==1.3.0", "joblib==1.3.2"],
 )
 def train_model_op(
     dataset: Input[Dataset],
     model_output: Output[Model],
     test_size: float = 0.2,
     random_state: int = 42,
-) -> None:
+) -> NamedTuple("Outputs", [("accuracy", float)]):
     import pandas as pd
     from sklearn.linear_model import LogisticRegression
     from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score
+    import joblib
 
-    df = pd.read_csv(dataset.path)
+    data_path = dataset.path if hasattr(dataset, 'path') else dataset
+    model_path = model_output.path if hasattr(model_output, 'path') else model_output
+
+    df = pd.read_csv(data_path)
     X = df.drop("target", axis=1)
     y = df["target"]
 
@@ -89,8 +95,13 @@ def train_model_op(
     model = LogisticRegression(max_iter=1000)
     model.fit(X_train, y_train)
 
-    import joblib
-    joblib.dump(model, model_output.path)
+    y_pred = model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+
+    joblib.dump(model, model_path)
+    if hasattr(model_output, 'metadata'):
+        model_output.metadata["accuracy"] = acc
+    return (acc,)
 ```
 
 ### 3. Evaluate Model Component
@@ -98,7 +109,7 @@ def train_model_op(
 ```python
 @component(
     base_image="python:3.10",
-    packages_to_install=["pandas==2.0.3", "scikit-learn==1.3.0"],
+    packages_to_install=["pandas==2.0.3", "scikit-learn==1.3.0", "joblib==1.3.2"],
 )
 def evaluate_model_op(
     model: Input[Model],
@@ -109,15 +120,19 @@ def evaluate_model_op(
     import joblib
     from sklearn.metrics import accuracy_score
 
-    df = pd.read_csv(dataset.path)
+    data_path = dataset.path if hasattr(dataset, 'path') else dataset
+    model_path = model.path if hasattr(model, 'path') else model
+
+    df = pd.read_csv(data_path)
     X = df.drop("target", axis=1)
     y = df["target"]
 
-    clf = joblib.load(model.path)
+    clf = joblib.load(model_path)
     y_pred = clf.predict(X)
     acc = accuracy_score(y, pred)
 
-    metrics.log_metric("accuracy", acc)
+    if hasattr(metrics, 'log_metric'):
+        metrics.log_metric("accuracy", acc)
     return (acc,)
 ```
 
@@ -175,7 +190,7 @@ def test_load_data(mock_bq_client, tmp_path):
 
     # Act: call the component's underlying function
     func = load_data_op.python_func
-    row_count = func(
+    row_count, = func(
         query="SELECT * FROM dataset.table",
         project_id="test-project",
         dataset=dataset_path,
@@ -205,17 +220,17 @@ def test_train_model(tmp_path):
 
     # Act
     func = train_model_op.python_func
-    func(
+    accuracy, = func(
         dataset=data_path,
         model_output=model_path,
         test_size=0.25,
         random_state=42,
     )
 
-    # Assert: model file was created
+    # Assert
+    assert 0.0 <= accuracy <= 1.0
     import joblib
     model = joblib.load(model_path)
-    assert model is not None
     assert hasattr(model, "predict")
 ```
 
@@ -245,7 +260,7 @@ def test_evaluate_model(tmp_path):
     # Act
     from unittest.mock import MagicMock
     func = evaluate_model_op.python_func
-    accuracy = func(
+    accuracy, = func(
         dataset=data_path,
         model=model_path,
         metrics=MagicMock(),  # Mock Output[Metrics] artifact
@@ -255,7 +270,11 @@ def test_evaluate_model(tmp_path):
     assert 0.0 <= accuracy <= 1.0
 ```
 
-**Key insight:** `.python_func` strips away the KFP container wrapper. Inputs become plain values instead of `Input[Dataset]` objects — you pass file paths directly.
+**Key insights:**
+
+- **`.python_func` strips away the KFP container wrapper.** Inputs become plain values instead of `Input[Dataset]` objects — you pass file paths directly.
+- **NamedTuple return values** come back as plain tuples. Destructure with `accuracy, = func(...)`.
+- **Use the `hasattr` guard** (`dataset.path if hasattr(dataset, 'path') else dataset`) to write components that work both as compiled KFP components and via `.python_func`.
 
 ---
 
